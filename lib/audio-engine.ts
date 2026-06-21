@@ -13,6 +13,55 @@ const CROSSFADE_SECONDS = 1.5;
 
 type AnyAudioContext = AudioContext | OfflineAudioContext;
 
+/** One musical beat at ~80 BPM, scaled so 16 beats = exactly 12 s */
+const BEAT = 12 / 16; // 0.75 s
+
+/** MIDI note number → Hz */
+function midiToHz(n: number) {
+  return 440 * Math.pow(2, (n - 69) / 12);
+}
+
+/**
+ * Melody: Brahms-esque phrase in C major, 16 beats / 12 s.
+ * [startBeat, durationBeats (unused by chime but good to read), midiNote, velocity]
+ */
+const LULLABY_MELODY: Array<[number, number, number, number]> = [
+  [0, 1.5, 67, 0.55], // G4  — gentle opening
+  [1.5, 0.5, 69, 0.5], // A4
+  [2, 1.5, 72, 0.7], // C5  — first rise
+  [3.5, 0.5, 71, 0.6], // B4  (warm passing tone)
+  [4, 2.0, 72, 0.75], // C5  — hold, peak of phrase A
+  [6, 1.0, 74, 0.65], // D5
+  [7, 1.0, 76, 0.7], // E5  — peak
+  [8, 1.5, 74, 0.6], // D5  — begin descent
+  [9.5, 0.5, 72, 0.55], // C5
+  [10, 1.0, 71, 0.5], // B4  — winding down
+  [11, 1.0, 67, 0.45], // G4  — resolve, loops into next cycle
+];
+
+/**
+ * Accompaniment: I – V/vi – V – I progression
+ * [startBeat, bassHz, innerVoiceHz]
+ */
+const LULLABY_CHORDS: Array<[number, number, number]> = [
+  [0, midiToHz(48), midiToHz(64)], // C3 + E4  (I)
+  [4, midiToHz(47), midiToHz(62)], // B2 + D4  (colour chord)
+  [8, midiToHz(43), midiToHz(67)], // G2 + G4  (V)
+  [12, midiToHz(48), midiToHz(64)], // C3 + E4  (resolve, into next loop)
+];
+
+/** Schedule one 12-second lullaby cycle starting at `cycleStart`. */
+function scheduleLullaby(ctx: AnyAudioContext, dest: AudioNode, cycleStart: number) {
+  for (const [beat, , midi, vel] of LULLABY_MELODY) {
+    chime(ctx, dest, cycleStart + beat * BEAT, midiToHz(midi), vel);
+  }
+  for (const [beat, bassHz, chordHz] of LULLABY_CHORDS) {
+    const t = cycleStart + beat * BEAT;
+    bassPluck(ctx, dest, t, bassHz, 0.22);
+    bassPluck(ctx, dest, t + 0.01, chordHz, 0.14); // tiny stagger = softer blend
+  }
+}
+
 /* -------------------------------------------------------------------------- */
 /*  Raw noise generators (mono Float32 buffers)                               */
 /* -------------------------------------------------------------------------- */
@@ -102,27 +151,69 @@ function thump(ctx: AnyAudioContext, dest: AudioNode, time: number, vel: number,
 }
 
 /** Soft bell-like note for the music box. `time` is an absolute AudioContext timestamp. */
-function chime(ctx: AnyAudioContext, dest: AudioNode, time: number, freq: number) {
-  const osc = ctx.createOscillator();
-  osc.type = "triangle";
-  osc.frequency.value = freq;
+function chime(ctx: AnyAudioContext, dest: AudioNode, time: number, freq: number, vel = 0.6) {
+  const decayTime = 2.4;
+
+  // Higher notes are naturally piercing — ease them back a little
+  const freqNorm = Math.min(1, Math.max(0, (freq - 200) / 1200));
+  const peakGain = vel * (0.55 - freqNorm * 0.18);
+
+  // Fundamental — triangle body
+  const osc1 = ctx.createOscillator();
+  osc1.type = "triangle";
+  osc1.frequency.value = freq;
+
+  // 2nd harmonic — adds a delicate sparkle
   const osc2 = ctx.createOscillator();
   osc2.type = "sine";
   osc2.frequency.value = freq * 2;
-  const g = ctx.createGain();
-  g.gain.setValueAtTime(0.0001, time);
-  g.gain.exponentialRampToValueAtTime(0.5, time + 0.02);
-  g.gain.exponentialRampToValueAtTime(0.0001, time + 1.3);
+
+  // Slightly-detuned tine — chorus shimmer like a real music-box tine
+  const osc3 = ctx.createOscillator();
+  osc3.type = "sine";
+  osc3.frequency.value = freq * 1.003;
+
+  // Shared envelope: snappy attack → mid-level sustain → long tail
+  const env = ctx.createGain();
+  env.gain.setValueAtTime(0.0001, time);
+  env.gain.exponentialRampToValueAtTime(peakGain, time + 0.012);
+  env.gain.exponentialRampToValueAtTime(peakGain * 0.55, time + 0.07);
+  env.gain.exponentialRampToValueAtTime(0.0001, time + decayTime);
+
   const g2 = ctx.createGain();
-  g2.gain.value = 0.25;
-  osc.connect(g);
+  g2.gain.value = 0.28;
+  const g3 = ctx.createGain();
+  g3.gain.value = 0.18;
+
+  osc1.connect(env);
   osc2.connect(g2);
-  g2.connect(g);
-  g.connect(dest);
-  osc.start(time);
+  g2.connect(env);
+  osc3.connect(g3);
+  g3.connect(env);
+  env.connect(dest);
+
+  const stopAt = time + decayTime + 0.05;
+  osc1.start(time);
+  osc1.stop(stopAt);
   osc2.start(time);
-  osc.stop(time + 1.4);
-  osc2.stop(time + 1.4);
+  osc2.stop(stopAt);
+  osc3.start(time);
+  osc3.stop(stopAt);
+}
+
+/** Gentle sine bass pluck, for harmonic support beneath melody notes. */
+function bassPluck(ctx: AnyAudioContext, dest: AudioNode, time: number, freq: number, vel = 0.28) {
+  const osc = ctx.createOscillator();
+  osc.type = "sine";
+  osc.frequency.value = freq;
+  const env = ctx.createGain();
+  env.gain.setValueAtTime(0.0001, time);
+  env.gain.exponentialRampToValueAtTime(vel, time + 0.025);
+  env.gain.exponentialRampToValueAtTime(0.0001, time + 1.6);
+  osc.connect(env);
+  env.connect(dest);
+  osc.start(time);
+  osc.stop(time + 1.7);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -269,11 +360,7 @@ function scheduleEventCycle(
       thump(ctx, dest, cycleStart + beat + 0.3, 0.45, 70);
     }
   } else if (id === "lullaby") {
-    const notes = [523.25, 587.33, 659.25, 783.99, 880.0, 659.25, 587.33, 523.25];
-    const step = DURATION / notes.length; // 1.5s per note
-    notes.forEach((f, i) => {
-      chime(ctx, dest, cycleStart + i * step, f);
-    });
+    scheduleLullaby(ctx, dest, cycleStart);
   }
 }
 

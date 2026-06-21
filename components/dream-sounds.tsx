@@ -110,11 +110,7 @@ export function DreamSounds() {
                 : "bg-primary text-primary-foreground shadow-[0_0_24px_-4px_oklch(0.83_0.12_85/0.6)] hover:scale-105",
             )}
           >
-            {s.isPlaying ? (
-              <Pause className="size-6" />
-            ) : (
-              <Play className="ml-0.5 size-6" />
-            )}
+            {s.isPlaying ? <Pause className="size-6" /> : <Play className="ml-0.5 size-6" />}
           </button>
 
           <button
