@@ -240,12 +240,25 @@ function buildContinuous(ctx: AnyAudioContext, id: SoundId): AudioNode {
   switch (id) {
     case "white": {
       const src = noiseSource(ctx, "white");
+      // PORT-39: lower, warmer character for baby sleep. The old 11 kHz
+      // lowpass was nearly transparent, so the noise hissed like static.
+      // Band-limit it to a soothing low-mid range and give the low end a
+      // gentle lift so it reads as a soft, warm hush instead.
+      const hp = ctx.createBiquadFilter();
+      hp.type = "highpass";
+      hp.frequency.value = 150;
       const lp = ctx.createBiquadFilter();
       lp.type = "lowpass";
-      lp.frequency.value = 11000;
-      src.connect(lp);
+      lp.frequency.value = 3000;
+      const shelf = ctx.createBiquadFilter();
+      shelf.type = "lowshelf";
+      shelf.frequency.value = 250;
+      shelf.gain.value = 4;
+      src.connect(hp);
+      hp.connect(lp);
+      lp.connect(shelf);
       src.start();
-      return lp;
+      return shelf;
     }
     case "pink": {
       const src = noiseSource(ctx, "pink");
