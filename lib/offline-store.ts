@@ -9,10 +9,15 @@ const STORE = "sounds";
 
 function openDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, 1);
+    const req = indexedDB.open(DB_NAME, 2);
     req.onupgradeneeded = () => {
       const db = req.result;
       if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE);
+      // v2 (PORT-39): white-noise synthesis changed to a lower, warmer tone,
+      // so drop any previously cached render — the next offline save re-bakes
+      // it with the new sound.
+      const tx = req.transaction;
+      if (tx) tx.objectStore(STORE).delete("white");
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
